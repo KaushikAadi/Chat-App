@@ -35,7 +35,7 @@ async function checkUsernameAvailable(name) {
   const response = await fetch(
     `${API_URL}/check-username?name=${encodeURIComponent(name)}`
   );
-  if (response.status === 409) return false;
+  if (response.exists === false) return false;
   if (!response.ok) throw new Error('username-check-failed');
   return true;
 }
