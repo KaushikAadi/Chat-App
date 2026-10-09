@@ -5,6 +5,7 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 from google.api_core.datetime_helpers import DatetimeWithNanoseconds
+from datetime import datetime, timezone
 
 # Initialize FastAPI for HTTP routes
 app = FastAPI()
@@ -37,26 +38,46 @@ db = firestore.client()
 # --- HTTP ROUTE (FastAPI) ---
 
 @app.get("/chat-history/{chat_id}")
+
 async def get_chat_history(chat_id: str):
+
     messages_ref = db.collection("Messages")
+
     
-    # Get the last 50 messages for this specific chat, sorted by time
-    query = (
-        messages_ref.where(filter=FieldFilter("chat_id", "==", chat_id))
-        .order_by("timestamp")
-        .limit(50)
-        .get()
-    )
+
+    # 1. Fetch the messages WITHOUT .order_by() to prevent the Firestore index crash
+
+    query = messages_ref.where(filter=FieldFilter("chat_id", "==", chat_id)).get()
+
     
+
     results = []
+
     for doc in query:
+
         data = doc.to_dict()
-        # Firestore timestamps crash standard JSON parsers, so we convert it to a string
-        if "timestamp" in data and isinstance(data["timestamp"], DatetimeWithNanoseconds):
-            data["timestamp"] = data["timestamp"].isoformat()
-        results.append(data)
-        
-    return results
+
+        # Ensure timestamp exists before converting
+
+        if "timestamp" in data and data["timestamp"] is not None:
+
+            if hasattr(data["timestamp"], "isoformat"):
+
+                data["timestamp"] = data["timestamp"].isoformat()
+
+            results.append(data)
+
+            
+
+    # 2. Sort the list in Python memory by timestamp (oldest first)
+
+    results.sort(key=lambda x: x.get("timestamp", ""))
+
+    
+
+    # 3. Return only the last 50 messages to keep the frontend fast
+
+    return results[-50:]
 
 @app.get("/inbox/{uid}")
 async def get_inbox(uid: str):
@@ -107,6 +128,16 @@ async def get_inbox(uid: str):
             
     # 4. Return as a clean list for your frontend to map over
     return list(inbox_dict.values())
+
+@app.get("/is-online/{uid}")
+async def check_user_online(uid: str):
+    # Check if the requested UID exists in your active_users dictionary
+    is_online = uid in active_users
+    
+    return {
+        "uid": uid, 
+        "online": is_online
+    }
 
 @app.post("/verify-login")
 def verify_login():
@@ -213,7 +244,7 @@ async def send_chat(sid, data):
     uids.sort()
     chat_id = f"{uids[0]}_{uids[1]}"
 
-    # 3. Package it with the chat_id and timestamp
+    # 3. Package it with the special Firestore timestamp
     message_payload = {
         "chat_id": chat_id,
         "sender_uid": sender_uid,
@@ -228,5 +259,10 @@ async def send_chat(sid, data):
     # 5. Instantly route it if the receiver is online
     if receiver_uid in active_users:
         receiver_sid = active_users[receiver_uid]
-        await sio.emit("receive_chat", message_payload, to=receiver_sid)
+        
+        # CREATE A COPY JUST FOR THE SOCKET (Using a real text timestamp)
+        socket_payload = message_payload.copy()
+        socket_payload["timestamp"] = datetime.now(timezone.utc).isoformat()
+        
+        await sio.emit("receive_chat", socket_payload, to=receiver_sid)
 
