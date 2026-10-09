@@ -1,3 +1,4 @@
+// src/Chat.jsx
 import { useEffect, useState, useRef } from 'react';
 import { io } from 'socket.io-client';
 import { auth } from './firebase';
@@ -23,12 +24,13 @@ export default function Chat({ currentUser }) {
   const [socket, setSocket] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState([]);
-  const [inboxChats, setInboxChats] = useState([]); // Stores active conversations
+  const [inboxChats, setInboxChats] = useState([]); 
   
   const [selectedUser, setSelectedUser] = useState(null);
   const [messages, setMessages] = useState([]);
   const [newMessage, setNewMessage] = useState('');
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
+  const [isOnline, setIsOnline] = useState(false); // Tracks if selected user is online
   
   const messagesEndRef = useRef(null);
 
@@ -97,12 +99,34 @@ export default function Chat({ currentUser }) {
     fetchHistory();
   }, [selectedUser, currentUser.uid]);
 
+  // 4. Check Online Status (Poll every 10 seconds)
+  useEffect(() => {
+    if (!selectedUser) return;
+
+    const checkOnlineStatus = async () => {
+      try {
+        const res = await fetch(`${API_URL}/is-online/${selectedUser.uid}`);
+        if (res.ok) {
+          const data = await res.json();
+          setIsOnline(data.online);
+        }
+      } catch (err) {
+        console.error("Failed to check online status", err);
+      }
+    };
+
+    checkOnlineStatus(); // Check immediately on click
+    const intervalId = setInterval(checkOnlineStatus, 10000); 
+
+    return () => clearInterval(intervalId); // Cleanup timer when you switch users
+  }, [selectedUser]);
+
   // Auto-scroll to bottom of messages
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // 4. Search Users via Backend
+  // 5. Search Users via Backend
   const handleSearch = async (e) => {
     e.preventDefault();
     if (!searchQuery.trim()) {
@@ -121,7 +145,7 @@ export default function Chat({ currentUser }) {
     }
   };
 
-  // 5. Send a new message
+  // 6. Send a new message
   const handleSendMessage = (e) => {
     e.preventDefault();
     if (!newMessage.trim() || !selectedUser || !socket) return;
@@ -168,7 +192,6 @@ export default function Chat({ currentUser }) {
         </form>
 
         <div className="user-list">
-          {/* If there are search results, show them. Otherwise show the Inbox */}
           {searchResults.length > 0 ? (
             <div className="search-results-section">
               <div className="section-title" style={{padding: '10px 15px', fontSize: '0.8rem', color: '#64748b'}}>SEARCH RESULTS</div>
@@ -195,11 +218,10 @@ export default function Chat({ currentUser }) {
                   <div 
                     key={chat.chat_id} 
                     className={`user-item ${selectedUser?.uid === chat.other_uid ? 'active' : ''}`}
-                    // Normalize the inbox data back into {uid, username} format for the selectedUser state
                     onClick={() => setSelectedUser({ uid: chat.other_uid, username: chat.other_username })}
                   >
                     <div className="avatar small">{chat.other_username?.charAt(0).toUpperCase() || '?'}</div>
-                    <div className="user-info" style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                    <div className="user-info" style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden', width: '100%' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                         <span className="user-name">{chat.other_username}</span>
                         <span style={{ fontSize: '0.7rem', color: '#94a3b8' }}>{formatTime(chat.timestamp)}</span>
@@ -228,7 +250,12 @@ export default function Chat({ currentUser }) {
           <div className="chat-window">
             <div className="chat-window-header">
                <div className="avatar">{selectedUser.username?.charAt(0).toUpperCase()}</div>
-               <h3>{selectedUser.username}</h3>
+               <div className="header-user-info">
+                 <h3>{selectedUser.username}</h3>
+                 <span className={`status-badge ${isOnline ? 'online' : 'offline'}`}>
+                   {isOnline ? '🟢 Online' : '⚪ Offline'}
+                 </span>
+               </div>
             </div>
             
             <div className="messages-container">
