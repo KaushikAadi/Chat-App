@@ -38,9 +38,46 @@ def verify_login():
     # Temporary bypass for the hackathon
     return {"status": "success", "message": "Login verification bypassed for now"}
 
+@app.post("/check_username")
+async def check_username(data: dict):
+    username = data.get("username")
+    print(username)
+    
+    # 1. Search the "Users" collection
+    users_ref = db.collection("Users")
+    query = users_ref.where("username", "==", username).limit(1).get()
+    
+    # 2. Retgit add urn the result directly 
+    # (Socket.IO automatically sends this dictionary back to the frontend's callback)
+    if len(query) > 0:
+        print(f"username exists: {True}")
+        return {"exists": True, "message": "Username is already taken."}
+
+    print(f"username exists: {False}")
+    return {"exists": False, "message": "Username is available."}
+
 @app.post("/register-user")
-def register_user(data:dict):
-    print(data.get("username"))
+async def register_user(data: dict):
+    uid = data.get("uid")
+    username = data.get("username")
+    
+    # 1. Validate that the frontend sent both pieces of data
+    if not uid or not username:
+        return {"error": "Missing uid or username"}, 400
+        
+    # 2. Package the data with an official server timestamp
+    user_data = {
+        "uid": uid,
+        "username": username,
+        "created_at": firestore.SERVER_TIMESTAMP
+    }
+    
+    # 3. Save it to Firestore in the "Users" collection
+    db.collection("Users").document(uid).set(user_data)
+    
+    # 4. Tell the frontend it worked
+    print({"success": True, "message": f"User {username} registered successfully."})
+    return {"success": True, "message": f"User {username} registered successfully."}
 
 # --- SOCKET.IO EVENTS (The Live Chat) ---
 
@@ -92,3 +129,4 @@ async def send_chat(sid, data):
     if receiver_uid in active_users:
         receiver_sid = active_users[receiver_uid]
         await sio.emit("receive_chat", message_payload, to=receiver_sid)
+
