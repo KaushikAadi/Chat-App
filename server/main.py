@@ -1,11 +1,21 @@
-import socketio
+import asyncio  # <-- REQUIRED for asyncio.to_thread
+import json
+import sys
+import time
+import urllib.error  # <-- REQUIRED for HTTPError
+import urllib.request  # <-- REQUIRED for Request and urlopen
+from datetime import datetime, timezone
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import firebase_admin
 from firebase_admin import credentials, firestore
-from google.cloud.firestore_v1.base_query import FieldFilter
 from google.api_core.datetime_helpers import DatetimeWithNanoseconds
-from datetime import datetime, timezone
+from google.cloud.firestore_v1.base_query import FieldFilter
+import socketio
+
+GEMINI_API_KEY = "PASTE_API_KEY_HERE"
+GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key={GEMINI_API_KEY}"
 
 # Initialize FastAPI for HTTP routes
 app = FastAPI()
@@ -35,11 +45,122 @@ firebase_admin.initialize_app(cred)
 # Create the permanent database connection
 db = firestore.client()
 
+def agent(url, prompt, prev_convo=None, system_prompt=None, json_mode=False, schema=None, max_retries=3):
+    """Sends the prompt to Gemini and receives its response."""
+    if prev_convo is None:
+        prev_convo = []
+        
+    new_message = {"role": "user", "parts": [{"text": prompt}]}
+    current_convo = prev_convo + [new_message]
+    send = {"contents": current_convo}
+    
+    if system_prompt:
+        send["systemInstruction"] = {"parts": [{"text": system_prompt}]}
+        
+    if json_mode:
+        send["generationConfig"] = {"responseMimeType": "application/json"}
+        if schema:
+            send["generationConfig"]["responseSchema"] = schema
+    
+    data = json.dumps(send).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=data,
+        headers={"Content-Type": "application/json"}
+    )
+    
+    base_delay = 1
+    
+    for attempt in range(max_retries): 
+        try: 
+            with urllib.request.urlopen(req) as response:
+                result = json.loads(response.read().decode("utf-8"))
+                
+                candidate = result.get("candidates", [{}])[0]
+                parts = candidate.get("content", {}).get("parts", [{}])
+                if not parts or "text" not in parts[0]:
+                    return "I couldn't generate a response to that."
+                
+                return parts[0]["text"]
+                
+        except urllib.error.HTTPError as e:
+            error_body = e.read().decode("utf-8")
+            
+            # Quota or rate-limiting
+            if "limit: 20" in error_body or "GenerateRequestsPerDay" in error_body:
+                print(f"[ERROR] Quota exhausted: {error_body}")
+                return "AI daily quota exhausted."
+                
+            if e.code in [429, 503] or any(k in error_body for k in ["UNAVAILABLE", "RESOURCE_EXHAUSTED", "Overloaded"]):
+                if attempt < max_retries - 1:
+                    sleep_time = base_delay * (2 ** attempt)
+                    time.sleep(sleep_time)
+                else:
+                    return "AI service is currently overloaded. Please try again."
+            else:
+                print(f"[ERROR] HTTP {e.code}: {error_body}")
+                return "Failed to process AI request."
+                
+        except Exception as e:
+            if attempt < max_retries - 1:
+                sleep_time = base_delay * (2 ** attempt)
+                time.sleep(sleep_time)
+            else:
+                print(f"[ERROR] Network error: {e}")
+                return "Network error contacting AI service."
+
+    return "No response received."
+
+async def make_ai_msg(chat_id: str, prompt: str) -> str:
+    # 1. Fetch all messages for this specific conversation
+    docs = db.collection("Messages").where(filter=FieldFilter("chat_id", "==", chat_id)).get()
+    
+    # Extract data and discard documents without timestamps
+    msgs = [d.to_dict() for d in docs if d.to_dict().get("timestamp") is not None]
+    
+    # Sort chronologically in memory (oldest to newest) to bypass Firestore composite index errors
+    msgs.sort(key=lambda x: x["timestamp"])
+    
+    # 2. Prevent duplicate user prompt:
+    # If the message just written to Firestore is already at the end of msgs, exclude it
+    if msgs and msgs[-1].get("text") == prompt and msgs[-1].get("sender_uid") != "ai":
+        history_pool = msgs[:-1]
+    else:
+        history_pool = msgs
+
+    # Slice strictly the last 10 prior messages
+    history_slice = history_pool[-30:]
+    
+    # 3. Format history for the Gemini REST API format
+    prev_convo = []
+    for m in history_slice:
+        role = "model" if m.get("sender_uid") == "ai" else "user"
+        prev_convo.append({
+            "role": role,
+            "parts": [{"text": m.get("text", "")}]
+        })
+    
+    system_prompt = (
+        "You are an AI assistant inside a real-time chat application. "
+        "Keep your responses concise, helpful, and formatted cleanly for chat."
+    )
+
+    # 4. Offload the blocking HTTP request to a worker thread so the server event loop does not freeze
+    reply = await asyncio.to_thread(
+        agent,
+        url=GEMINI_URL,
+        prompt=prompt,
+        prev_convo=prev_convo,
+        system_prompt=system_prompt
+    )
+    
+    return reply
+
 # --- HTTP ROUTE (FastAPI) ---
 
 @app.get("/chat-history/{chat_id}")
 
-async def get_chat_history(chat_id: str):
+def get_chat_history(chat_id: str):
 
     messages_ref = db.collection("Messages")
 
@@ -98,7 +219,7 @@ async def search_messages(chat_id: str, q: str = ""):
     return results
 
 @app.get("/inbox/{uid}")
-async def get_inbox(uid: str):
+def get_inbox(uid: str):
     messages_ref = db.collection("Messages")
     
     # 1. Fetch messages where the user is either the sender or receiver
@@ -107,11 +228,7 @@ async def get_inbox(uid: str):
     
     # 2. Combine all messages into a single list
     all_msgs = [doc.to_dict() for doc in sent + received]
-    
-    # Filter out any messages missing a timestamp
     all_msgs = [m for m in all_msgs if m.get("timestamp") is not None]
-    
-    # Sort them by time, newest first
     all_msgs.sort(key=lambda x: x["timestamp"], reverse=True)
     
     # 3. Group by chat_id to keep only the absolute newest message per conversation
@@ -120,13 +237,14 @@ async def get_inbox(uid: str):
     for msg in all_msgs:
         chat_id = msg["chat_id"]
         
-        # If we haven't seen this chat_id yet, this message is the newest one
         if chat_id not in inbox_dict:
-            
-            # Figure out the UID of the person we are talking to
             other_uid = msg["receiver_uid"] if msg["sender_uid"] == uid else msg["sender_uid"]
             
-            # Fetch that person's actual username and avatar from the Users collection
+            # --- PREVENT DUPLICATE "UNKNOWN" AI CHAT ---
+            if other_uid == "ai":
+                continue
+            # --------------------------------------------
+            
             user_doc = db.collection("Users").document(other_uid).get()
             
             if user_doc.exists:
@@ -137,12 +255,10 @@ async def get_inbox(uid: str):
                 other_username = "Unknown"
                 avatar_url = ""
             
-            # Convert Firestore timestamp to a frontend-friendly string
             ts = msg["timestamp"]
             if hasattr(ts, "isoformat"):
                 ts = ts.isoformat()
             
-            # Save the formatted data including the new avatar_url
             inbox_dict[chat_id] = {
                 "chat_id": chat_id,
                 "other_uid": other_uid,
@@ -152,7 +268,6 @@ async def get_inbox(uid: str):
                 "timestamp": ts
             }
             
-    # 4. Return as a clean list for the frontend
     return list(inbox_dict.values())
 @app.get("/is-online/{uid}")
 async def check_user_online(uid: str):
@@ -257,36 +372,61 @@ async def disconnect(sid):
             print(f"Currently online: {active_users}")
             break
 
+from datetime import datetime, timezone
+
 @sio.event
 async def send_chat(sid, data):
-    # 1. Extract the raw data
     sender_uid = data.get("sender_uid")
     receiver_uid = data.get("receiver_uid")
     text = data.get("text")
     
-    # 2. Generate the universal chat_id
     uids = [sender_uid, receiver_uid]
     uids.sort()
     chat_id = f"{uids[0]}_{uids[1]}"
 
-    # 3. Package it with the special Firestore timestamp
-    message_payload = {
+    # Save incoming user message
+    user_payload = {
         "chat_id": chat_id,
         "sender_uid": sender_uid,
         "receiver_uid": receiver_uid,
         "text": text,
         "timestamp": firestore.SERVER_TIMESTAMP
     }
+    _, user_doc_ref = db.collection("Messages").add(user_payload)
 
-    # 4. Change your existing .add() line to capture the reference:
-    _, doc_ref = db.collection("Messages").add(message_payload)
-    
-    # 5. Instantly route it if the receiver is online
-    if receiver_uid in active_users:
-        receiver_sid = active_users[receiver_uid]
+    # Branch 1: Route to AI Assistant
+    if receiver_uid == "ai":
+        # Simulate typing indicator while the API request processes
+        await sio.emit("user_typing", {"sender_uid": "ai", "is_typing": True}, to=sid)
+
+        # Generate contextual response non-blockingly
+        ai_reply_text = await make_ai_msg(chat_id, text)
+
+        # Stop typing indicator
+        await sio.emit("user_typing", {"sender_uid": "ai", "is_typing": False}, to=sid)
+
+        # Persist the AI response
+        reply_payload = {
+            "chat_id": chat_id,
+            "sender_uid": "ai",
+            "receiver_uid": sender_uid,
+            "text": ai_reply_text,
+            "timestamp": firestore.SERVER_TIMESTAMP
+        }
+        _, ai_doc_ref = db.collection("Messages").add(reply_payload)
+
+        # Emit AI message back to the sender's active socket
+        socket_payload = reply_payload.copy()
+        socket_payload["message_id"] = ai_doc_ref.id
+        socket_payload["timestamp"] = datetime.now(timezone.utc).isoformat()
         
-        socket_payload = message_payload.copy()
-        socket_payload["message_id"] = doc_ref.id  # <-- ADD THIS LINE
+        await sio.emit("receive_chat", socket_payload, to=sid)
+
+    # Branch 2: Route to another human user
+    elif receiver_uid in active_users:
+        receiver_sid = active_users[receiver_uid]
+        socket_payload = user_payload.copy()
+        socket_payload["message_id"] = user_doc_ref.id
         socket_payload["timestamp"] = datetime.now(timezone.utc).isoformat()
         
         await sio.emit("receive_chat", socket_payload, to=receiver_sid)
