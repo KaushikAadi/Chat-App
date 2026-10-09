@@ -14,7 +14,16 @@ from google.api_core.datetime_helpers import DatetimeWithNanoseconds
 from google.cloud.firestore_v1.base_query import FieldFilter
 import socketio
 
-GEMINI_API_KEY = "PASTE_API_KEY_HERE"
+
+file_path = "api.jsonl"
+try:  # in case of wrong formatting or missing entries
+    with open(file_path, "r") as f:
+        config_data = json.load(f)
+        GEMINI_API_KEY = config_data["API_KEY"].strip()
+except Exception as e:
+    print(f"Error loading config: {e}") 
+    sys.exit(1)
+
 GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key={GEMINI_API_KEY}"
 
 # Initialize FastAPI for HTTP routes

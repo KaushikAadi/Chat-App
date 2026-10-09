@@ -1,0 +1,97 @@
+# Kamand Prompt Chat
+
+A high-performance, real-time 1-on-1 chat application built for the 24-hour college hackathon. It features instantaneous Socket.IO messaging, persistent database history, rich message interactions, and live user presence.
+
+## 🚀 Key Features
+* **Real-Time Messaging:** Powered by WebSockets (`Socket.IO`) for zero-latency communication.
+* **Persistent Database:** Cloud Firestore integration for secure, long-term chat history.
+* **Live Presence & Typing:** Real-time online/offline badges, typing animations, and read receipts (✓✓).
+* **Rich Interactions:** Support for inline message editing, deleting, and emoji reactions.
+* **Global & Local Search:** Search the database for new users, or search inside specific chat histories for past messages.
+* **Profile Management:** Users can update their bio and avatar DP seamlessly.
+* **Moderation:** Built-in reporting system to flag inappropriate messages for admin review.
+* **Desktop Alerts:** Native browser notifications for background messages.
+
+## 🛠️ Tech Stack
+* **Frontend:** React.js, Vite, `socket.io-client`, Firebase Auth
+* **Backend:** Python, FastAPI, `python-socketio`, Firebase Admin SDK
+* **Database:** Google Cloud Firestore
+
+---
+
+## ⚙️ Configuration & Setup (Local Development)
+
+### Prerequisites
+* [Node.js](https://nodejs.org/) (v16+ recommended)
+* [Python](https://www.python.org/) (3.8+)
+* A Firebase Project with **Authentication** (Email/Password) and **Firestore** enabled.
+
+### 1. Backend Setup (FastAPI + Socket.IO)
+
+1. Open a terminal and navigate to your backend directory.
+2. Create and activate a Python virtual environment:
+   ```bash
+   # Windows (Command Prompt)
+   python -m venv venv
+   venv\Scripts\activate
+
+   # macOS/Linux
+   python3 -m venv venv
+   source venv/bin/activate
+Install the required dependencies:
+
+Bash
+pip install fastapi uvicorn python-socketio firebase-admin
+Firebase Configuration:
+
+Go to your Firebase Console > Project Settings > Service Accounts.
+
+Click Generate new private key.
+
+Rename the downloaded file to serviceAccountKey.json and place it in the root of your backend folder.
+
+Start the backend server:
+
+Bash
+uvicorn main_2:socket_app --reload
+(Note: The server runs on http://localhost:8000)
+
+2. Frontend Setup (React + Vite)
+Open a new terminal window and navigate to your frontend directory.
+
+Install the dependencies:
+
+Bash
+npm install
+Environment Variables:
+
+Create a .env file in the root of your frontend folder.
+
+Add your Firebase configuration keys and the backend URL:
+
+Code snippet
+VITE_API_URL=http://localhost:8000
+
+VITE_FIREBASE_API_KEY=your_api_key
+VITE_FIREBASE_AUTH_DOMAIN=your_auth_domain
+VITE_FIREBASE_PROJECT_ID=your_project_id
+VITE_FIREBASE_STORAGE_BUCKET=your_storage_bucket
+VITE_FIREBASE_MESSAGING_SENDER_ID=your_messaging_sender_id
+VITE_FIREBASE_APP_ID=your_app_id
+Start the Vite development server:
+
+Bash
+npm run dev
+(Note: The frontend runs on http://localhost:5173)
+
+Also For LLM functionality , add your ai api key in api.jsonl file 
+
+
+💻 Running the Demo Locally   
+This project is configured to be presented locally. To demo the real-time features to the judges:   
+
+Ensure both the backend (localhost:8000) and frontend (localhost:5173) servers are running in separate terminal windows.   
+
+Open your browser and navigate to http://localhost:5173.   
+
+Pro-Tip for Demoing: Open the application in two separate browser windows (or one normal window and one Incognito window), log into two different accounts, and place them side-by-side to showcase the real-time typing indicators, read receipts, and live messaging instantly!
