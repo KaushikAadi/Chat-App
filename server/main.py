@@ -108,7 +108,7 @@ async def get_inbox(uid: str):
     # 2. Combine all messages into a single list
     all_msgs = [doc.to_dict() for doc in sent + received]
     
-    # Filter out any messages missing a timestamp (happens if Firebase is still processing it)
+    # Filter out any messages missing a timestamp
     all_msgs = [m for m in all_msgs if m.get("timestamp") is not None]
     
     # Sort them by time, newest first
@@ -126,27 +126,34 @@ async def get_inbox(uid: str):
             # Figure out the UID of the person we are talking to
             other_uid = msg["receiver_uid"] if msg["sender_uid"] == uid else msg["sender_uid"]
             
-            # Fetch that person's actual username from the Users collection
+            # Fetch that person's actual username and avatar from the Users collection
             user_doc = db.collection("Users").document(other_uid).get()
-            other_username = user_doc.to_dict().get("username", "Unknown") if user_doc.exists else "Unknown"
+            
+            if user_doc.exists:
+                user_data = user_doc.to_dict()
+                other_username = user_data.get("username", "Unknown")
+                avatar_url = user_data.get("avatar_url", "")
+            else:
+                other_username = "Unknown"
+                avatar_url = ""
             
             # Convert Firestore timestamp to a frontend-friendly string
             ts = msg["timestamp"]
             if hasattr(ts, "isoformat"):
                 ts = ts.isoformat()
             
-            # Save the formatted data
+            # Save the formatted data including the new avatar_url
             inbox_dict[chat_id] = {
                 "chat_id": chat_id,
                 "other_uid": other_uid,
                 "other_username": other_username,
+                "avatar_url": avatar_url,
                 "last_message": msg.get("text", ""),
                 "timestamp": ts
             }
             
-    # 4. Return as a clean list for your frontend to map over
+    # 4. Return as a clean list for the frontend
     return list(inbox_dict.values())
-
 @app.get("/is-online/{uid}")
 async def check_user_online(uid: str):
     # Check if the requested UID exists in your active_users dictionary
