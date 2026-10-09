@@ -41,6 +41,7 @@ def verify_login():
 @app.post("/check_username")
 async def check_username(data: dict):
     username = data.get("username")
+    print(username)
     
     # 1. Search the "Users" collection
     users_ref = db.collection("Users")
