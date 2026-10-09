@@ -266,3 +266,16 @@ async def send_chat(sid, data):
         
         await sio.emit("receive_chat", socket_payload, to=receiver_sid)
 
+@sio.event
+async def typing(sid, data):
+    sender_uid = data.get("sender_uid")
+    receiver_uid = data.get("receiver_uid")
+    is_typing = data.get("is_typing", True)
+    
+    # If the person they are chatting with is online, route the typing status to them
+    if receiver_uid in active_users:
+        receiver_sid = active_users[receiver_uid]
+        await sio.emit("user_typing", {
+            "sender_uid": sender_uid, 
+            "is_typing": is_typing
+        }, to=receiver_sid)
