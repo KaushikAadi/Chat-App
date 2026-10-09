@@ -53,7 +53,7 @@ Rename the downloaded file to serviceAccountKey.json and place it in the root of
 Start the backend server:
 
 Bash
-uvicorn main_2:socket_app --reload
+uvicorn main:socket_app --reload
 (Note: The server runs on http://localhost:8000)
 
 2. Frontend Setup (React + Vite)
