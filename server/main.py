@@ -112,14 +112,14 @@ async def send_chat(sid, data):
         await sio.emit("receive_chat", message_payload, to=receiver_sid)
 
 @sio.event
-async def check_username(sid, data):
+async def checkUsernameAvaialble(sid, data):
     username = data.get("username")
     
     # 1. Search the "Users" collection
     users_ref = db.collection("Users")
     query = users_ref.where("username", "==", username).limit(1).get()
     
-    # 2. Return the result directly 
+    # 2. Retgit add urn the result directly 
     # (Socket.IO automatically sends this dictionary back to the frontend's callback)
     if len(query) > 0:
         return {"exists": True, "message": "Username is already taken."}
