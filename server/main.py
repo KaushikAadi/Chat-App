@@ -129,6 +129,16 @@ async def get_inbox(uid: str):
     # 4. Return as a clean list for your frontend to map over
     return list(inbox_dict.values())
 
+@app.get("/is-online/{uid}")
+async def check_user_online(uid: str):
+    # Check if the requested UID exists in your active_users dictionary
+    is_online = uid in active_users
+    
+    return {
+        "uid": uid, 
+        "online": is_online
+    }
+
 @app.post("/verify-login")
 def verify_login():
     # Temporary bypass for the hackathon
@@ -255,3 +265,4 @@ async def send_chat(sid, data):
         socket_payload["timestamp"] = datetime.now(timezone.utc).isoformat()
         
         await sio.emit("receive_chat", socket_payload, to=receiver_sid)
+
