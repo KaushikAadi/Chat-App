@@ -293,3 +293,23 @@ async def delete_message(sid, data):
     if receiver_uid in active_users:
         receiver_sid = active_users[receiver_uid]
         await sio.emit("message_deleted", {"message_id": message_id}, to=receiver_sid)
+
+@sio.event
+async def edit_message(sid, data):
+    message_id = data.get("message_id")
+    new_text = data.get("new_text")
+    receiver_uid = data.get("receiver_uid")
+
+    # 1. Update the database and add an "is_edited" flag
+    db.collection("Messages").document(message_id).update({
+        "text": new_text,
+        "is_edited": True
+    })
+
+    # 2. Send the updated text to the friend's screen
+    if receiver_uid in active_users:
+        receiver_sid = active_users[receiver_uid]
+        await sio.emit("message_edited", {
+            "message_id": message_id, 
+            "new_text": new_text
+        }, to=receiver_sid)
