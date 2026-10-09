@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import firebase_admin
 from firebase_admin import credentials, firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
+from google.api_core.datetime_helpers import DatetimeWithNanoseconds
 
 # Initialize FastAPI for HTTP routes
 app = FastAPI()
@@ -34,6 +35,79 @@ firebase_admin.initialize_app(cred)
 db = firestore.client()
 
 # --- HTTP ROUTE (FastAPI) ---
+
+@app.get("/chat-history/{chat_id}")
+async def get_chat_history(chat_id: str):
+    messages_ref = db.collection("Messages")
+    
+    # Get the last 50 messages for this specific chat, sorted by time
+    query = (
+        messages_ref.where(filter=FieldFilter("chat_id", "==", chat_id))
+        .order_by("timestamp")
+        .limit(50)
+        .get()
+    )
+    
+    results = []
+    for doc in query:
+        data = doc.to_dict()
+        # Firestore timestamps crash standard JSON parsers, so we convert it to a string
+        if "timestamp" in data and isinstance(data["timestamp"], DatetimeWithNanoseconds):
+            data["timestamp"] = data["timestamp"].isoformat()
+        results.append(data)
+        
+    return results
+
+@app.get("/inbox/{uid}")
+async def get_inbox(uid: str):
+    messages_ref = db.collection("Messages")
+    
+    # 1. Fetch messages where the user is either the sender or receiver
+    sent = messages_ref.where(filter=FieldFilter("sender_uid", "==", uid)).get()
+    received = messages_ref.where(filter=FieldFilter("receiver_uid", "==", uid)).get()
+    
+    # 2. Combine all messages into a single list
+    all_msgs = [doc.to_dict() for doc in sent + received]
+    
+    # Filter out any messages missing a timestamp (happens if Firebase is still processing it)
+    all_msgs = [m for m in all_msgs if m.get("timestamp") is not None]
+    
+    # Sort them by time, newest first
+    all_msgs.sort(key=lambda x: x["timestamp"], reverse=True)
+    
+    # 3. Group by chat_id to keep only the absolute newest message per conversation
+    inbox_dict = {}
+    
+    for msg in all_msgs:
+        chat_id = msg["chat_id"]
+        
+        # If we haven't seen this chat_id yet, this message is the newest one
+        if chat_id not in inbox_dict:
+            
+            # Figure out the UID of the person we are talking to
+            other_uid = msg["receiver_uid"] if msg["sender_uid"] == uid else msg["sender_uid"]
+            
+            # Fetch that person's actual username from the Users collection
+            user_doc = db.collection("Users").document(other_uid).get()
+            other_username = user_doc.to_dict().get("username", "Unknown") if user_doc.exists else "Unknown"
+            
+            # Convert Firestore timestamp to a frontend-friendly string
+            ts = msg["timestamp"]
+            if hasattr(ts, "isoformat"):
+                ts = ts.isoformat()
+            
+            # Save the formatted data
+            inbox_dict[chat_id] = {
+                "chat_id": chat_id,
+                "other_uid": other_uid,
+                "other_username": other_username,
+                "last_message": msg.get("text", ""),
+                "timestamp": ts
+            }
+            
+    # 4. Return as a clean list for your frontend to map over
+    return list(inbox_dict.values())
+
 @app.post("/verify-login")
 def verify_login():
     # Temporary bypass for the hackathon
@@ -115,7 +189,7 @@ async def connect(sid, environ, auth):
         print(f"✅ User {uid} connected! (SID: {sid})")
         print(f"Currently online: {active_users}")
     else:
-        print("❌ Connection rejected. No UID provided.")
+        print(" Connection rejected. No UID provided.")
         raise socketio.exceptions.ConnectionRefusedError('No UID provided')
 
 @sio.event
@@ -123,7 +197,7 @@ async def disconnect(sid):
     for uid, saved_sid in list(active_users.items()):
         if saved_sid == sid:
             del active_users[uid]
-            print(f"👋 User {uid} disconnected.")
+            print(f" User {uid} disconnected.")
             print(f"Currently online: {active_users}")
             break
 
