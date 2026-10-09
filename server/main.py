@@ -279,3 +279,17 @@ async def typing(sid, data):
             "sender_uid": sender_uid, 
             "is_typing": is_typing
         }, to=receiver_sid)
+
+@sio.event
+async def delete_message(sid, data):
+    message_id = data.get("message_id")
+    chat_id = data.get("chat_id")
+    receiver_uid = data.get("receiver_uid")
+
+    # 1. Delete it permanently from Firestore
+    db.collection("Messages").document(message_id).delete()
+
+    # 2. Tell the other person's screen to remove the message instantly
+    if receiver_uid in active_users:
+        receiver_sid = active_users[receiver_uid]
+        await sio.emit("message_deleted", {"message_id": message_id}, to=receiver_sid)s
