@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef } from 'react';
 import { io } from 'socket.io-client';
 import { auth } from './firebase';
-import { updateProfile } from 'firebase/auth'; // NEW: For updating your own DP
+import { updateProfile } from 'firebase/auth'; // For updating your own DP
 import './Chat.css';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
@@ -18,7 +18,7 @@ const generateChatId = (uid1, uid2) => {
   return `${uids[0]}_${uids[1]}`;
 };
 
-// NEW: Universal Avatar Component
+// Universal Avatar Component
 const Avatar = ({ url, name, isSmall }) => {
   const className = `avatar ${isSmall ? 'small' : ''}`;
   if (url) {
@@ -55,7 +55,7 @@ export default function Chat({ currentUser }) {
   const [reportReason, setReportReason] = useState('');
   const [reportedMsgId, setReportedMsgId] = useState(null);
   
-  // NEW: Inline Edit State
+  // Inline Edit State
   const [editingMessageId, setEditingMessageId] = useState(null);
   const [editMessageText, setEditMessageText] = useState('');
 
@@ -148,6 +148,13 @@ export default function Chat({ currentUser }) {
         if (res.ok) setIsOnline((await res.json()).online);
       } catch (err) {}
     };
+    
+    // AI is always online
+    if (selectedUser.uid === 'ai') {
+      setIsOnline(true);
+      return;
+    }
+
     checkOnlineStatus(); 
     const intervalId = setInterval(checkOnlineStatus, 10000); 
     return () => clearInterval(intervalId); 
@@ -202,7 +209,7 @@ export default function Chat({ currentUser }) {
     socket.emit('delete_message', { message_id: messageId, chat_id: generateChatId(currentUser.uid, selectedUser.uid), receiver_uid: selectedUser.uid });
   };
 
-  // NEW: Save Inline Edit
+  // Save Inline Edit
   const saveEdit = () => {
     if (!editingMessageId || !editMessageText.trim()) return;
     
@@ -237,7 +244,6 @@ export default function Chat({ currentUser }) {
         body: JSON.stringify({ uid: currentUser.uid, bio: profileBio, avatar_url: profileAvatar })
       });
       if (res.ok) {
-        // Update your own profile picture instantly in Firebase
         if (profileAvatar) {
           await updateProfile(auth.currentUser, { photoURL: profileAvatar });
         }
@@ -306,7 +312,6 @@ export default function Chat({ currentUser }) {
       <aside className="sidebar">
         <div className="sidebar-header">
           <div className="my-profile">
-            {/* Display your own updated Avatar! */}
             <Avatar url={currentUser.photoURL} name={currentUser.displayName} />
             <h3>{currentUser.displayName || 'Me'}</h3>
           </div>
@@ -323,13 +328,38 @@ export default function Chat({ currentUser }) {
           <button type="submit" className="search-btn">🔍</button>
         </form>
 
+        {/* --- AI BOT BUTTON --- */}
+        <div 
+          className={`user-item ${selectedUser?.uid === 'ai' ? 'active' : ''}`} 
+          onClick={() => setSelectedUser({ 
+            uid: 'ai', 
+            username: 'Kamand AI Assistant', 
+            avatar_url: '' 
+          })}
+          style={{ 
+            background: 'linear-gradient(135deg, rgba(30, 58, 138, 0.4), rgba(49, 46, 129, 0.4))', 
+            margin: '10px', 
+            borderRadius: '10px',
+            border: '1px solid rgba(59, 130, 246, 0.3)',
+            cursor: 'pointer'
+          }}
+        >
+          <div className="avatar small" style={{ background: '#2563eb', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            🤖
+          </div>
+          <div className="user-info" style={{ display: 'flex', flexDirection: 'column', width: '100%' }}>
+             <span className="user-name" style={{ fontWeight: 'bold', color: '#60a5fa' }}>Kamand AI</span>
+             <span style={{ fontSize: '0.75rem', color: '#94a3b8' }}>Always online</span>
+          </div>
+        </div>
+        {/* ----------------------- */}
+
         <div className="user-list">
           {searchResults.length > 0 ? (
             <div className="search-results-section">
               <div className="section-title">SEARCH RESULTS</div>
               {searchResults.map((user) => (
                 <div key={user.uid} className={`user-item ${selectedUser?.uid === user.uid ? 'active' : ''}`} onClick={() => setSelectedUser(user)}>
-                  {/* Avatar Component Handles DP rendering */}
                   <Avatar url={user.avatar_url} name={user.username} isSmall />
                   <div className="user-info"><span className="user-name">{user.username}</span></div>
                 </div>
@@ -370,7 +400,11 @@ export default function Chat({ currentUser }) {
           <div className="chat-window">
             <div className="chat-window-header" style={{justifyContent: 'space-between'}}>
                <div style={{display: 'flex', gap: '15px', alignItems: 'center'}}>
-                 <Avatar url={selectedUser.avatar_url} name={selectedUser.username} />
+                 {selectedUser.uid === 'ai' ? (
+                   <div className="avatar" style={{ background: '#2563eb', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>🤖</div>
+                 ) : (
+                   <Avatar url={selectedUser.avatar_url} name={selectedUser.username} />
+                 )}
                  <div className="header-user-info">
                    <h3>{selectedUser.username}</h3>
                    <span className={`status-badge ${isOnline ? 'online' : 'offline'}`}>{isOnline ? '🟢 Online' : '⚪ Offline'}</span>
@@ -391,15 +425,13 @@ export default function Chat({ currentUser }) {
                     <div key={index} className={`message-wrapper ${isMine ? 'mine' : 'theirs'}`}>
                       <div className={`message-bubble ${isMine ? 'mine' : 'theirs'}`}>
                         
-                        {/* Hover Action Menu */}
                         <div className="msg-actions">
                           {isMine && msg.message_id && <button className="action-btn" onClick={() => {setEditingMessageId(msg.message_id); setEditMessageText(msg.text);}} title="Edit">✏️</button>}
                           {isMine && msg.message_id && <button className="action-btn" onClick={() => handleDelete(msg.message_id)} title="Delete">🗑️</button>}
                           {!isMine && msg.message_id && <button className="action-btn" onClick={() => handleReaction(msg.message_id)} title="React">👍</button>}
-                          {!isMine && msg.message_id && <button className="action-btn" onClick={() => { setReportedMsgId(msg.message_id); setShowReportModal(true); }} title="Report">🚩</button>}
+                          {!isMine && msg.message_id && selectedUser.uid !== 'ai' && <button className="action-btn" onClick={() => { setReportedMsgId(msg.message_id); setShowReportModal(true); }} title="Report">🚩</button>}
                         </div>
 
-                        {/* NEW: Inline Edit UI instead of prompt() */}
                         {editingMessageId === msg.message_id ? (
                           <div style={{display: 'flex', flexDirection: 'column', gap: '8px', minWidth: '200px'}}>
                             <input 
