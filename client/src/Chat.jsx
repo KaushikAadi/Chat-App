@@ -6,7 +6,6 @@ import './Chat.css';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
-// Format timestamps for the UI
 const formatTime = (timeData) => {
   if (!timeData) return '';
   const date = new Date(timeData);
@@ -14,7 +13,6 @@ const formatTime = (timeData) => {
   return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 };
 
-// Generates the same chat_id format as the Python backend
 const generateChatId = (uid1, uid2) => {
   const uids = [uid1, uid2].sort();
   return `${uids[0]}_${uids[1]}`;
@@ -29,8 +27,13 @@ export default function Chat({ currentUser }) {
   const [selectedUser, setSelectedUser] = useState(null);
   const [messages, setMessages] = useState([]);
   const [newMessage, setNewMessage] = useState('');
+  
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
-  const [isOnline, setIsOnline] = useState(false); // Tracks if selected user is online
+  const [isOnline, setIsOnline] = useState(false); 
+  
+  // NEW: Typing state and ref for the timer
+  const [isTyping, setIsTyping] = useState(false);
+  const typingTimeoutRef = useRef(null);
   
   const messagesEndRef = useRef(null);
 
@@ -44,50 +47,51 @@ export default function Chat({ currentUser }) {
 
     newSocket.on('receive_chat', (messageData) => {
       setMessages((prev) => {
-        // Only append if we are actively chatting with the sender
         if (selectedUser && messageData.sender_uid === selectedUser.uid) {
           return [...prev, messageData];
         }
         return prev;
       });
-      // Refresh inbox to show latest message preview
       fetchInbox();
+    });
+
+    // NEW: Listen for typing indicators
+    newSocket.on('user_typing', (data) => {
+      if (selectedUser && data.sender_uid === selectedUser.uid) {
+        setIsTyping(data.is_typing);
+      }
     });
 
     return () => newSocket.disconnect();
   }, [currentUser, selectedUser]); 
 
-  // 2. Fetch Inbox (Recent Conversations)
+  // Reset typing state if we switch to a different user
+  useEffect(() => {
+    setIsTyping(false);
+  }, [selectedUser]);
+
+  // 2. Fetch Inbox
   const fetchInbox = async () => {
     try {
       const res = await fetch(`${API_URL}/inbox/${currentUser.uid}`);
-      if (res.ok) {
-        setInboxChats(await res.json());
-      }
+      if (res.ok) setInboxChats(await res.json());
     } catch (err) {
       console.error("Failed to fetch inbox", err);
     }
   };
 
-  // Load inbox on mount
-  useEffect(() => {
-    fetchInbox();
-  }, [currentUser.uid]);
+  useEffect(() => { fetchInbox(); }, [currentUser.uid]);
 
-  // 3. Fetch Chat History when a user is selected
+  // 3. Fetch Chat History
   useEffect(() => {
     if (!selectedUser) return;
-
     const fetchHistory = async () => {
       setIsLoadingHistory(true);
       try {
         const chatId = generateChatId(currentUser.uid, selectedUser.uid);
         const res = await fetch(`${API_URL}/chat-history/${chatId}`);
-        if (res.ok) {
-          setMessages(await res.json());
-        } else {
-          setMessages([]);
-        }
+        if (res.ok) setMessages(await res.json());
+        else setMessages([]);
       } catch (err) {
         console.error("Failed to fetch history", err);
         setMessages([]);
@@ -95,14 +99,12 @@ export default function Chat({ currentUser }) {
         setIsLoadingHistory(false);
       }
     };
-
     fetchHistory();
   }, [selectedUser, currentUser.uid]);
 
-  // 4. Check Online Status (Poll every 10 seconds)
+  // 4. Check Online Status (Poll every 10s)
   useEffect(() => {
     if (!selectedUser) return;
-
     const checkOnlineStatus = async () => {
       try {
         const res = await fetch(`${API_URL}/is-online/${selectedUser.uid}`);
@@ -114,17 +116,15 @@ export default function Chat({ currentUser }) {
         console.error("Failed to check online status", err);
       }
     };
-
-    checkOnlineStatus(); // Check immediately on click
+    checkOnlineStatus(); 
     const intervalId = setInterval(checkOnlineStatus, 10000); 
-
-    return () => clearInterval(intervalId); // Cleanup timer when you switch users
+    return () => clearInterval(intervalId); 
   }, [selectedUser]);
 
   // Auto-scroll to bottom of messages
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  }, [messages, isTyping]); // Added isTyping so it scrolls down when the bubble appears
 
   // 5. Search Users via Backend
   const handleSearch = async (e) => {
@@ -133,7 +133,6 @@ export default function Chat({ currentUser }) {
       setSearchResults([]);
       return;
     }
-    
     try {
       const res = await fetch(`${API_URL}/search-users?q=${encodeURIComponent(searchQuery)}`);
       if (res.ok) {
@@ -145,24 +144,58 @@ export default function Chat({ currentUser }) {
     }
   };
 
+  // NEW: Handle Typing Logic
+  const handleInputChange = (e) => {
+    setNewMessage(e.target.value);
+    
+    if (!socket || !selectedUser) return;
+
+    // Tell the backend we are typing
+    socket.emit('typing', {
+      sender_uid: currentUser.uid,
+      receiver_uid: selectedUser.uid,
+      is_typing: true
+    });
+
+    // Clear the previous timer
+    if (typingTimeoutRef.current) {
+      clearTimeout(typingTimeoutRef.current);
+    }
+
+    // Set a new timer to automatically stop typing after 2 seconds of no keystrokes
+    typingTimeoutRef.current = setTimeout(() => {
+      socket.emit('typing', {
+        sender_uid: currentUser.uid,
+        receiver_uid: selectedUser.uid,
+        is_typing: false
+      });
+    }, 2000);
+  };
+
   // 6. Send a new message
   const handleSendMessage = (e) => {
     e.preventDefault();
     if (!newMessage.trim() || !selectedUser || !socket) return;
 
+    // Immediately cancel the typing indicator when a message is sent
+    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+    socket.emit('typing', {
+      sender_uid: currentUser.uid,
+      receiver_uid: selectedUser.uid,
+      is_typing: false
+    });
+
     const messageData = {
       sender_uid: currentUser.uid,
       receiver_uid: selectedUser.uid,
       text: newMessage.trim(),
-      timestamp: new Date().toISOString(), // Optimistic UI update
+      timestamp: new Date().toISOString(), 
     };
 
     setMessages((prev) => [...prev, messageData]);
     socket.emit('send_chat', messageData);
     
     setNewMessage('');
-    
-    // Refresh inbox locally immediately to update the preview text
     fetchInbox();
   };
 
@@ -276,6 +309,18 @@ export default function Chat({ currentUser }) {
                   );
                 })
               )}
+              
+              {/* NEW: Typing Indicator UI */}
+              {isTyping && (
+                <div className="message-wrapper theirs">
+                  <div className="message-bubble theirs typing-bubble">
+                    <span className="typing-dot"></span>
+                    <span className="typing-dot"></span>
+                    <span className="typing-dot"></span>
+                  </div>
+                </div>
+              )}
+              
               <div ref={messagesEndRef} />
             </div>
 
@@ -284,7 +329,7 @@ export default function Chat({ currentUser }) {
                 type="text"
                 placeholder={`Message ${selectedUser.username}...`}
                 value={newMessage}
-                onChange={(e) => setNewMessage(e.target.value)}
+                onChange={handleInputChange} /* UPDATED to trigger socket event */
                 className="message-input"
                 autoComplete="off"
               />
