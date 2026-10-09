@@ -54,17 +54,12 @@ async def get_chat_history(chat_id: str):
     results = []
 
     for doc in query:
-
-        data = doc.to_dict()
-
-        # Ensure timestamp exists before converting
-
-        if "timestamp" in data and data["timestamp"] is not None:
-
-            if hasattr(data["timestamp"], "isoformat"):
-
-                data["timestamp"] = data["timestamp"].isoformat()
-
+            data = doc.to_dict()
+            data["message_id"] = doc.id  # <-- ADD THIS LINE
+                
+            if "timestamp" in data and data["timestamp"] is not None:
+                if hasattr(data["timestamp"], "isoformat"):
+                    data["timestamp"] = data["timestamp"].isoformat()
             results.append(data)
 
             
@@ -78,6 +73,29 @@ async def get_chat_history(chat_id: str):
     # 3. Return only the last 50 messages to keep the frontend fast
 
     return results[-50:]
+
+@app.get("/search-messages/{chat_id}")
+async def search_messages(chat_id: str, q: str = ""):
+    if not q.strip():
+        return []
+
+    # Fetch the history for this specific chat
+    query = db.collection("Messages").where(filter=FieldFilter("chat_id", "==", chat_id)).get()
+    
+    results = []
+    # Search through the text locally in Python
+    for doc in query:
+        data = doc.to_dict()
+        text = data.get("text", "").lower()
+        
+        if q.lower() in text:
+            data["message_id"] = doc.id
+            if "timestamp" in data and data["timestamp"] is not None:
+                if hasattr(data["timestamp"], "isoformat"):
+                    data["timestamp"] = data["timestamp"].isoformat()
+            results.append(data)
+            
+    return results
 
 @app.get("/inbox/{uid}")
 async def get_inbox(uid: str):
@@ -253,15 +271,15 @@ async def send_chat(sid, data):
         "timestamp": firestore.SERVER_TIMESTAMP
     }
 
-    # 4. Save it permanently to Firestore
-    db.collection("Messages").add(message_payload)
+    # 4. Change your existing .add() line to capture the reference:
+    _, doc_ref = db.collection("Messages").add(message_payload)
     
     # 5. Instantly route it if the receiver is online
     if receiver_uid in active_users:
         receiver_sid = active_users[receiver_uid]
         
-        # CREATE A COPY JUST FOR THE SOCKET (Using a real text timestamp)
         socket_payload = message_payload.copy()
+        socket_payload["message_id"] = doc_ref.id  # <-- ADD THIS LINE
         socket_payload["timestamp"] = datetime.now(timezone.utc).isoformat()
         
         await sio.emit("receive_chat", socket_payload, to=receiver_sid)
@@ -313,3 +331,68 @@ async def edit_message(sid, data):
             "message_id": message_id, 
             "new_text": new_text
         }, to=receiver_sid)
+
+@sio.event
+async def send_reaction(sid, data):
+    message_id = data.get("message_id")
+    reaction = data.get("reaction")  # Example: "👍"
+    receiver_uid = data.get("receiver_uid")
+
+    # 1. Update Firestore (Appends the emoji to an array in the database)
+    db.collection("Messages").document(message_id).update({
+        "reactions": firestore.ArrayUnion([reaction])
+    })
+
+    # 2. Instantly show it on the friend's screen
+    if receiver_uid in active_users:
+        receiver_sid = active_users[receiver_uid]
+        await sio.emit("receive_reaction", {
+            "message_id": message_id, 
+            "reaction": reaction
+        }, to=receiver_sid)
+
+@sio.event
+async def mark_message_read(sid, data):
+    message_id = data.get("message_id")
+    sender_uid = data.get("sender_uid")
+
+    # Mark the document as read in Firestore
+    db.collection("Messages").document(message_id).update({
+        "is_read": True
+    })
+
+    # Tell the original sender's screen to display the read receipt
+    if sender_uid in active_users:
+        sender_sid = active_users[sender_uid]
+        await sio.emit("message_read", {
+            "message_id": message_id
+        }, to=sender_sid)
+
+@app.post("/update-profile")
+async def update_profile(data: dict):
+    uid = data.get("uid")
+    
+    # Build payload dynamically so users can update just the bio, just the avatar, or both
+    update_data = {}
+    if "bio" in data:
+        update_data["bio"] = data["bio"]
+    if "avatar_url" in data:
+        update_data["avatar_url"] = data["avatar_url"]
+        
+    if update_data:
+        db.collection("Users").document(uid).update(update_data)
+        
+    return {"success": True, "message": "Profile updated successfully"}
+
+@app.post("/report-message")
+async def report_message(data: dict):
+    # Save the flagged report to a dedicated admin collection
+    db.collection("ModerationReports").add({
+        "message_id": data.get("message_id"),
+        "reported_by": data.get("reported_by_uid"),
+        "reason": data.get("reason", "Inappropriate content"),
+        "status": "pending_review",
+        "timestamp": firestore.SERVER_TIMESTAMP
+    })
+    
+    return {"success": True, "message": "Message flagged for moderation."}
