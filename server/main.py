@@ -38,26 +38,46 @@ db = firestore.client()
 # --- HTTP ROUTE (FastAPI) ---
 
 @app.get("/chat-history/{chat_id}")
+
 async def get_chat_history(chat_id: str):
+
     messages_ref = db.collection("Messages")
+
     
-    # Get the last 50 messages for this specific chat, sorted by time
-    query = (
-        messages_ref.where(filter=FieldFilter("chat_id", "==", chat_id))
-        .order_by("timestamp")
-        .limit(50)
-        .get()
-    )
+
+    # 1. Fetch the messages WITHOUT .order_by() to prevent the Firestore index crash
+
+    query = messages_ref.where(filter=FieldFilter("chat_id", "==", chat_id)).get()
+
     
+
     results = []
+
     for doc in query:
+
         data = doc.to_dict()
-        # Firestore timestamps crash standard JSON parsers, so we convert it to a string
-        if "timestamp" in data and isinstance(data["timestamp"], DatetimeWithNanoseconds):
-            data["timestamp"] = data["timestamp"].isoformat()
-        results.append(data)
-        
-    return results
+
+        # Ensure timestamp exists before converting
+
+        if "timestamp" in data and data["timestamp"] is not None:
+
+            if hasattr(data["timestamp"], "isoformat"):
+
+                data["timestamp"] = data["timestamp"].isoformat()
+
+            results.append(data)
+
+            
+
+    # 2. Sort the list in Python memory by timestamp (oldest first)
+
+    results.sort(key=lambda x: x.get("timestamp", ""))
+
+    
+
+    # 3. Return only the last 50 messages to keep the frontend fast
+
+    return results[-50:]
 
 @app.get("/inbox/{uid}")
 async def get_inbox(uid: str):
