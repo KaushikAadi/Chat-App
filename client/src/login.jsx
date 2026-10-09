@@ -24,20 +24,27 @@ const ERROR_MESSAGES = {
   'auth/network-request-failed': 'Can’t reach the server. Check your connection.',
 };
 
+
 const friendlyError = (error) =>
   ERROR_MESSAGES[error.code] || 'Something went wrong. Please try again.';
 
 const USERNAME_PATTERN = /^[a-zA-Z0-9_]{3,20}$/;
 
+
+
 // Asks the Python backend whether a username is free.
 // Expected: 200 = available, 409 = taken. Anything else is treated as a server problem.
 async function checkUsernameAvailable(name) {
-  const response = await fetch(
-    `${API_URL}/check-username?name=${encodeURIComponent(name)}`
-  );
-  if (response.exists === false) return false;
+  const response = await fetch(`${API_URL}/check_username`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: name }),
+  });
+
   if (!response.ok) throw new Error('username-check-failed');
-  return true;
+
+  const data = await response.json();
+  return !data.exists; 
 }
 
 export default function Login() {
@@ -66,17 +73,17 @@ export default function Login() {
       return;
     }
 
-    // 1. Check the username is free (Python backend)
-    try {
+     try {
       const available = await checkUsernameAvailable(name);
       if (!available) {
         showError('That username is taken. Try another.');
         return;
       }
     } catch {
-      showError('Couldn’t check the username. Make sure the server is running and try again.');
+      showError('Couldnt check the username. Make sure the server is running and try again.');
       return;
     }
+   
 
     // 2. Create the user in Firebase Auth
     const { user } = await createUserWithEmailAndPassword(auth, email, password);
