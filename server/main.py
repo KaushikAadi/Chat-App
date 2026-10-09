@@ -3,6 +3,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import firebase_admin
 from firebase_admin import credentials, firestore
+from google.cloud.firestore_v1.base_query import FieldFilter
 
 # Initialize FastAPI for HTTP routes
 app = FastAPI()
@@ -78,6 +79,31 @@ async def register_user(data: dict):
     # 4. Tell the frontend it worked
     print({"success": True, "message": f"User {username} registered successfully."})
     return {"success": True, "message": f"User {username} registered successfully."}
+
+@app.get("/search-users")
+async def search_users(q: str = ""):
+    # 1. If the query is empty, save a database read and return an empty list
+    if not q.strip():
+        return []
+    
+    # 2. Search the "Users" collection
+    users_ref = db.collection("Users")
+    
+    # 3. Firestore prefix search (finds anything starting with 'q')
+    # The '\uf8ff' character is a very high unicode value, ensuring it matches 
+    # anything that comes alphabetically after the query string.
+    query = (
+        users_ref.where(filter=FieldFilter("username", ">=", q))
+        .where(filter=FieldFilter("username", "<=", q + "\uf8ff"))
+        .limit(15)
+        .get()
+    )
+    
+    # 4. Convert Firestore documents to a list of dictionaries
+    results = [doc.to_dict() for doc in query]
+    
+    # 5. Send back to the React frontend
+    return results
 
 # --- SOCKET.IO EVENTS (The Live Chat) ---
 
