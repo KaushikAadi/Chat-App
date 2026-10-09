@@ -5,6 +5,7 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 from google.api_core.datetime_helpers import DatetimeWithNanoseconds
+from datetime import datetime, timezone
 
 # Initialize FastAPI for HTTP routes
 app = FastAPI()
@@ -213,7 +214,7 @@ async def send_chat(sid, data):
     uids.sort()
     chat_id = f"{uids[0]}_{uids[1]}"
 
-    # 3. Package it with the chat_id and timestamp
+    # 3. Package it with the special Firestore timestamp
     message_payload = {
         "chat_id": chat_id,
         "sender_uid": sender_uid,
@@ -228,5 +229,9 @@ async def send_chat(sid, data):
     # 5. Instantly route it if the receiver is online
     if receiver_uid in active_users:
         receiver_sid = active_users[receiver_uid]
-        await sio.emit("receive_chat", message_payload, to=receiver_sid)
-
+        
+        # CREATE A COPY JUST FOR THE SOCKET (Using a real text timestamp)
+        socket_payload = message_payload.copy()
+        socket_payload["timestamp"] = datetime.now(timezone.utc).isoformat()
+        
+        await sio.emit("receive_chat", socket_payload, to=receiver_sid)
