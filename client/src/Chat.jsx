@@ -5,17 +5,25 @@ import './Chat.css';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
-// Helper to format timestamps into readable times (e.g., "10:30 AM")
-const formatTime = (isoString) => {
-  if (!isoString) return '';
-  const date = new Date(isoString);
+// Format timestamps for the UI
+const formatTime = (timeData) => {
+  if (!timeData) return '';
+  const date = new Date(timeData);
+  if (isNaN(date)) return '';
   return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+};
+
+// Generates the same chat_id format as the Python backend
+const generateChatId = (uid1, uid2) => {
+  const uids = [uid1, uid2].sort();
+  return `${uids[0]}_${uids[1]}`;
 };
 
 export default function Chat({ currentUser }) {
   const [socket, setSocket] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState([]);
+  const [inboxChats, setInboxChats] = useState([]); // Stores active conversations
   
   const [selectedUser, setSelectedUser] = useState(null);
   const [messages, setMessages] = useState([]);
@@ -32,36 +40,51 @@ export default function Chat({ currentUser }) {
 
     setSocket(newSocket);
 
-    newSocket.on('connect', () => console.log('Socket Connected:', newSocket.id));
-
-    // Listen for LIVE incoming messages
-    newSocket.on('receive_message', (messageData) => {
+    newSocket.on('receive_chat', (messageData) => {
       setMessages((prev) => {
-        // Only add the message to the screen if we are currently chatting with the sender
-        // (Otherwise, it might just trigger a notification in the future)
-        if (selectedUser && messageData.senderId === selectedUser.uid) {
+        // Only append if we are actively chatting with the sender
+        if (selectedUser && messageData.sender_uid === selectedUser.uid) {
           return [...prev, messageData];
         }
         return prev;
       });
+      // Refresh inbox to show latest message preview
+      fetchInbox();
     });
 
     return () => newSocket.disconnect();
-  }, [currentUser, selectedUser]); // Re-bind if selected user changes so the closure has the right state
+  }, [currentUser, selectedUser]); 
 
-  // 2. Fetch Chat History when a user is selected
+  // 2. Fetch Inbox (Recent Conversations)
+  const fetchInbox = async () => {
+    try {
+      const res = await fetch(`${API_URL}/inbox/${currentUser.uid}`);
+      if (res.ok) {
+        setInboxChats(await res.json());
+      }
+    } catch (err) {
+      console.error("Failed to fetch inbox", err);
+    }
+  };
+
+  // Load inbox on mount
+  useEffect(() => {
+    fetchInbox();
+  }, [currentUser.uid]);
+
+  // 3. Fetch Chat History when a user is selected
   useEffect(() => {
     if (!selectedUser) return;
 
     const fetchHistory = async () => {
       setIsLoadingHistory(true);
       try {
-        const res = await fetch(`${API_URL}/chat-history?user1=${currentUser.uid}&user2=${selectedUser.uid}`);
+        const chatId = generateChatId(currentUser.uid, selectedUser.uid);
+        const res = await fetch(`${API_URL}/chat-history/${chatId}`);
         if (res.ok) {
-          const history = await res.json();
-          setMessages(history);
+          setMessages(await res.json());
         } else {
-          setMessages([]); // Fallback to empty if no history
+          setMessages([]);
         }
       } catch (err) {
         console.error("Failed to fetch history", err);
@@ -74,21 +97,23 @@ export default function Chat({ currentUser }) {
     fetchHistory();
   }, [selectedUser, currentUser.uid]);
 
-  // Auto-scroll to bottom when messages change
+  // Auto-scroll to bottom of messages
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // 3. Search Users via Backend
+  // 4. Search Users via Backend
   const handleSearch = async (e) => {
     e.preventDefault();
-    if (!searchQuery.trim()) return;
+    if (!searchQuery.trim()) {
+      setSearchResults([]);
+      return;
+    }
     
     try {
       const res = await fetch(`${API_URL}/search-users?q=${encodeURIComponent(searchQuery)}`);
       if (res.ok) {
         const data = await res.json();
-        // Filter out ourselves from the search results
         setSearchResults(data.filter(u => u.uid !== currentUser.uid));
       }
     } catch (err) {
@@ -96,28 +121,26 @@ export default function Chat({ currentUser }) {
     }
   };
 
-  // 4. Send a new message
+  // 5. Send a new message
   const handleSendMessage = (e) => {
     e.preventDefault();
     if (!newMessage.trim() || !selectedUser || !socket) return;
 
     const messageData = {
-      senderId: currentUser.uid,
-      receiverId: selectedUser.uid,
+      sender_uid: currentUser.uid,
+      receiver_uid: selectedUser.uid,
       text: newMessage.trim(),
-      timestamp: new Date().toISOString(),
+      timestamp: new Date().toISOString(), // Optimistic UI update
     };
 
-    // Optimistic UI update (show it immediately for the sender)
     setMessages((prev) => [...prev, messageData]);
-
-    // Send to backend via Socket
-    socket.emit('send_message', messageData);
+    socket.emit('send_chat', messageData);
     
     setNewMessage('');
+    
+    // Refresh inbox locally immediately to update the preview text
+    fetchInbox();
   };
-
-  const handleSignOut = () => auth.signOut();
 
   return (
     <div className="chat-layout">
@@ -128,7 +151,7 @@ export default function Chat({ currentUser }) {
             <div className="avatar">{currentUser.displayName?.charAt(0).toUpperCase()}</div>
             <h3>{currentUser.displayName || 'Me'}</h3>
           </div>
-          <button onClick={handleSignOut} className="logout-btn" title="Sign Out">
+          <button onClick={() => auth.signOut()} className="logout-btn" title="Sign Out">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>
           </button>
         </div>
@@ -145,26 +168,55 @@ export default function Chat({ currentUser }) {
         </form>
 
         <div className="user-list">
-          {searchResults.length === 0 ? (
-             <p className="no-results">Search for a username to start chatting.</p>
-          ) : (
-            searchResults.map((user) => (
-              <div 
-                key={user.uid} 
-                className={`user-item ${selectedUser?.uid === user.uid ? 'active' : ''}`}
-                onClick={() => setSelectedUser(user)}
-              >
-                <div className="avatar small">{user.username?.charAt(0).toUpperCase() || '?'}</div>
-                <div className="user-info">
-                  <span className="user-name">{user.username}</span>
+          {/* If there are search results, show them. Otherwise show the Inbox */}
+          {searchResults.length > 0 ? (
+            <div className="search-results-section">
+              <div className="section-title" style={{padding: '10px 15px', fontSize: '0.8rem', color: '#64748b'}}>SEARCH RESULTS</div>
+              {searchResults.map((user) => (
+                <div 
+                  key={user.uid} 
+                  className={`user-item ${selectedUser?.uid === user.uid ? 'active' : ''}`}
+                  onClick={() => setSelectedUser(user)}
+                >
+                  <div className="avatar small">{user.username?.charAt(0).toUpperCase() || '?'}</div>
+                  <div className="user-info">
+                    <span className="user-name">{user.username}</span>
+                  </div>
                 </div>
-              </div>
-            ))
+              ))}
+            </div>
+          ) : (
+            <div className="inbox-section">
+              <div className="section-title" style={{padding: '10px 15px', fontSize: '0.8rem', color: '#64748b'}}>RECENT CHATS</div>
+              {inboxChats.length === 0 ? (
+                 <p className="no-results">No recent chats. Search for a user above.</p>
+              ) : (
+                inboxChats.map((chat) => (
+                  <div 
+                    key={chat.chat_id} 
+                    className={`user-item ${selectedUser?.uid === chat.other_uid ? 'active' : ''}`}
+                    // Normalize the inbox data back into {uid, username} format for the selectedUser state
+                    onClick={() => setSelectedUser({ uid: chat.other_uid, username: chat.other_username })}
+                  >
+                    <div className="avatar small">{chat.other_username?.charAt(0).toUpperCase() || '?'}</div>
+                    <div className="user-info" style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span className="user-name">{chat.other_username}</span>
+                        <span style={{ fontSize: '0.7rem', color: '#94a3b8' }}>{formatTime(chat.timestamp)}</span>
+                      </div>
+                      <span style={{ fontSize: '0.8rem', color: '#64748b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {chat.last_message}
+                      </span>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
           )}
         </div>
       </aside>
 
-      {/* MAIN CHAT */}
+      {/* MAIN CHAT AREA */}
       <main className="chat-main">
         {!selectedUser ? (
           <div className="blank-state">
@@ -174,13 +226,11 @@ export default function Chat({ currentUser }) {
           </div>
         ) : (
           <div className="chat-window">
-            {/* Chat Header */}
             <div className="chat-window-header">
                <div className="avatar">{selectedUser.username?.charAt(0).toUpperCase()}</div>
                <h3>{selectedUser.username}</h3>
             </div>
             
-            {/* Messages Area */}
             <div className="messages-container">
               {isLoadingHistory ? (
                 <div className="loading-spinner">Loading messages...</div>
@@ -188,7 +238,7 @@ export default function Chat({ currentUser }) {
                 <div className="empty-chat">Say hi to {selectedUser.username}! 👋</div>
               ) : (
                 messages.map((msg, index) => {
-                  const isMine = msg.senderId === currentUser.uid;
+                  const isMine = msg.sender_uid === currentUser.uid;
                   return (
                     <div key={index} className={`message-wrapper ${isMine ? 'mine' : 'theirs'}`}>
                       <div className={`message-bubble ${isMine ? 'mine' : 'theirs'}`}>
@@ -199,11 +249,9 @@ export default function Chat({ currentUser }) {
                   );
                 })
               )}
-              {/* Dummy div to scroll to */}
               <div ref={messagesEndRef} />
             </div>
 
-            {/* Input Area */}
             <form onSubmit={handleSendMessage} className="message-input-area">
               <input
                 type="text"
