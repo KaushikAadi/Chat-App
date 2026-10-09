@@ -292,4 +292,4 @@ async def delete_message(sid, data):
     # 2. Tell the other person's screen to remove the message instantly
     if receiver_uid in active_users:
         receiver_sid = active_users[receiver_uid]
-        await sio.emit("message_deleted", {"message_id": message_id}, to=receiver_sid)s
+        await sio.emit("message_deleted", {"message_id": message_id}, to=receiver_sid)
